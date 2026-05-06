@@ -1,0 +1,12 @@
+*.exe
+*.obj
+*.o
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.user
+*.suo
+.vs/
+build/
+output/
