@@ -1,22 +1,36 @@
 /*
- * Privilege escalation module.
+ * Privilege escalation module — 3 techniki na SYSTEM.
  *
- * Two techniques:
- *   Technique 1 — Fodhelper UAC bypass:
- *     Windows 10/11: fodhelper.exe is a Microsoft-signed binary that
- *     auto-elevates without a UAC prompt. It reads the file association
- *     for "ms-settings" from HKCU\Software\Classes and runs the default
- *     handler. By setting HKCU\...\ms-settings\shell\open\command to
- *     our executable, we get silent admin execution.
+ * Kolejność:
+ *   1. Fodhelper UAC bypass → admin (nowy proces z /elevate)
+ *   2. Token stealing z SYSTEM process → SYSTEM (nowy proces z /system)
+ *   3. Named pipe impersonation → SYSTEM (fallback)
  *
- *   Technique 2 — Named pipe impersonation (SYSTEM):
- *     Create a named pipe, trick a privileged service into connecting
- *     to it, then use ImpersonateNamedPipeClient to steal its token.
- *     Specifically, we use the "Event Log" service (which runs as SYSTEM
- *     and can be coerced into connecting to a named pipe via the
- *     ELAM/ETW tracing mechanism).
+ * Architektura — Fodhelper:
+ *   Microsoft's fodhelper.exe (Features on Demand) jest signed przez MS i
+ *   auto-elevates bez prompta UAC. Szuka handlera dla "ms-settings" URI
+ *   schematu w HKCU\Software\Classes\ms-settings... HKCU jest writable
+ *   dla usera → hijack.
  *
- * Priority: Technique 1 first, then 2 as fallback.
+ * Token stealing:
+ *   Gdy mamy admina (po fodhelper), włączamy SeDebugPrivilege i otwieramy
+ *   proces SYSTEM (winlogon.exe, services.exe, csrss.exe). Otwieramy jego
+ *   token, duplikujemy, i CreateProcessWithTokenW jako SYSTEM.
+ *   Działa to na Windows 11 bo SeDebugPrivilege jest w tokenie admina,
+ *   trzeba go tylko aktywować przez AdjustTokenPrivileges.
+ *
+ * Named pipe (fallback):
+ *   Tworzymy pipe \\.\pipe\malinowy, triggerujemy SYSTEM service przez RPC
+ *   i impersonate'ujemy klienta. Spooler + MS-RPRN coercion.
+ *
+ * Gotchas:
+ *   — Fodhelper tworzy NOWY proces — nie podnosi obecnego. Dlatego main.c
+ *     ma logikę flag /elevate i /system.
+ *   — Token stealing wymaga, żeby target proces miał otwarty uchwyt.
+ *     Windows 11 może blokować OpenProcess na PPL-protected processes
+ *     (np. csrss.exe). Na winlogona powinno działać.
+ *   — Defender alertuje na otwieranie LSASS — celowo go unikamy.
+ *   — Wszystkie operacje tokenów muszą być cleanup'owane (CloseHandle).
  */
 
 #pragma once
@@ -25,13 +39,33 @@
 
 #include <windows.h>
 
-/* Run as admin via fodhelper UAC bypass. Returns 0 on success. */
+/* ── Technika 1: Fodhelper UAC bypass ──
+ * Tworzy nowy proces jako admin (z flagą /elevate).
+ * Zwraca 0 jeśli udało się triggerować fodhelpera. */
 int escalate_fodhelper(void);
 
-/* Named pipe impersonation to SYSTEM. Returns 0 on success. */
+/* ── Technika 2: Token stealing z SYSTEM process ──
+ * Znajduje proces SYSTEM, otwiera token, duplikuje i tworzy nowy proces
+ * jako SYSTEM (z flagą /system).
+ * Zwraca PID nowego procesu, lub 0 na fail. */
+DWORD escalate_system_token(void);
+
+/* ── Technika 3: Named pipe impersonation (fallback) ──
+ * Tworzy pipe, triggeruje SYSTEM service do połączenia.
+ * Zwraca 0 na sukces. */
 int escalate_named_pipe(void);
 
-/* Primary entry — tries fodhelper, falls back to pipe. Returns 0 if escalated. */
+/* ── Główny entry point ──
+ * Sprawdza obecny poziom uprawnień i decyduje co robić:
+ *   - SYSTEM → natychmiast 0
+ *   - Admin → próbuje token stealing, potem pipe
+ *   - User → próbuje fodhelper
+ *
+ * Zwraca: 0=SYSTEM, 1=admin, 2=user (nie udało się) */
 int escalate_to_system(void);
+
+/* ── Helper: sprawdzenie poziomu uprawnień ── */
+BOOL is_running_as_system(void);
+BOOL is_running_as_admin(void);
 
 #endif
