@@ -53,7 +53,7 @@ OBJS := $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(SRCS))
 TARGET := $(BUILDDIR)/malinowy.exe
 
 # ── Libraries ──
-LIBS := -lwinhttp -lkernel32 -luser32 -ladvapi32 -lmsvcrt -lntdll -lgcc
+LIBS := -lwinhttp -lkernel32 -luser32 -ladvapi32 -lmsvcrt -lntdll -lgcc -lwinspool
 
 # ── Compiler flags ──
 # -Os             — optymalizuj pod rozmiar (ważne dla małego payloadu)

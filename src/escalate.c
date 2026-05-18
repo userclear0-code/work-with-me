@@ -5,6 +5,8 @@
  * WAŻNE — architektura escalation pipeline:
  *
  *   Proces nie może sam siebie podnieść z user → admin bez UAC prompta.
+#include <wchar.h>       /* _wcsicmp */
+#include <winspool.h>     /* AddPrinterConnection */
  *   Dlatego fodhelper tworzy NOWY proces (malinowy.exe /elevate) który
  *   ma admin token. Ten nowy proces wywołuje escalate_system_token()
  *   który tworzy KOLEJNY proces (malinowy.exe /system) z SYSTEM tokenem.
